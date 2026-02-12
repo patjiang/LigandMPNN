@@ -402,7 +402,13 @@ def main(args) -> None:
             feature_dict["batch_size"] = args.batch_size
             B, L, _, _ = feature_dict["X"].shape  # batch size should be 1 for now.
             # add additional keys to the feature dictionary
-            feature_dict["temperature"] = args.temperature
+            
+            temp_input = torch.tensor(args.temperature, dtype=torch.float32, device=device)
+            if temp_input.numel() == 1:
+                temperature = temp_input.item()
+            else:
+                temperature = temp_input[None, :]
+            feature_dict["temperature"] = temperature
             feature_dict["bias"] = (
                 (-1e8 * omit_AA[None, None, :] + bias_AA).repeat([1, L, 1])
                 + bias_AA_per_residue[None]
@@ -857,7 +863,8 @@ if __name__ == "__main__":
     argparser.add_argument(
         "--temperature",
         type=float,
-        default=0.1,
+        nargs="+",
+        default=[1.0],
         help="Temperature to sample sequences.",
     )
     argparser.add_argument(
