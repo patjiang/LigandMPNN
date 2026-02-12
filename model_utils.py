@@ -178,298 +178,298 @@ class ProteinMPNN(torch.nn.Module):
         return h_V, h_E, E_idx
 
     def sample(self, feature_dict):
-    def normalize_temperature(temperature, B, L, B_decoder, device):
-        if isinstance(temperature, float):
-            temperature = torch.full((B, L), temperature, device=device)
-        elif torch.is_tensor(temperature):
-            if temperature.dim() == 0:
-                temperature = temperature.expand(B, L)
-            elif temperature.dim() == 1:
-                temperature = temperature[:, None].expand(B, L)
-            elif temperature.dim() == 2:
-                pass
+        def normalize_temperature(temperature, B, L, B_decoder, device):
+            if isinstance(temperature, float):
+                temperature = torch.full((B, L), temperature, device=device)
+            elif torch.is_tensor(temperature):
+                if temperature.dim() == 0:
+                    temperature = temperature.expand(B, L)
+                elif temperature.dim() == 1:
+                    temperature = temperature[:, None].expand(B, L)
+                elif temperature.dim() == 2:
+                    pass
+                else:
+                    raise ValueError
             else:
                 raise ValueError
-        else:
-            raise ValueError
-        temperature = temperature.repeat(B_decoder, 1)
-        temperature = torch.clamp(temperature, min=1e-6)
-        return temperature
-
-    def gather_temperature(temperature, t):
-        return torch.gather(temperature, 1, t[:, None])
-
-    B_decoder = feature_dict["batch_size"]
-    S_true = feature_dict["S"]
-    mask = feature_dict["mask"]
-    chain_mask = feature_dict["chain_mask"]
-    bias = feature_dict["bias"]
-    randn = feature_dict["randn"]
-    symmetry_list_of_lists = feature_dict["symmetry_residues"]
-    symmetry_weights_list_of_lists = feature_dict["symmetry_weights"]
-    temperature_raw = feature_dict["temperature"]
-
-    B, L = S_true.shape
-    device = S_true.device
-
-    h_V, h_E, E_idx = self.encode(feature_dict)
-
-    chain_mask = mask * chain_mask
-    decoding_order = torch.argsort((chain_mask + 1e-4) * torch.abs(randn))
-    temperature = normalize_temperature(
-        temperature_raw, B, L, B_decoder, device
-    )
-
-    if len(symmetry_list_of_lists[0]) == 0 and len(symmetry_list_of_lists) == 1:
-        E_idx = E_idx.repeat(B_decoder, 1, 1)
-        permutation_matrix_reverse = torch.nn.functional.one_hot(
-            decoding_order, num_classes=L
-        ).float()
-        order_mask_backward = torch.einsum(
-            "ij, biq, bjp->bqp",
-            (1 - torch.triu(torch.ones(L, L, device=device))),
-            permutation_matrix_reverse,
-            permutation_matrix_reverse,
+            temperature = temperature.repeat(B_decoder, 1)
+            temperature = torch.clamp(temperature, min=1e-6)
+            return temperature
+    
+        def gather_temperature(temperature, t):
+            return torch.gather(temperature, 1, t[:, None])
+    
+        B_decoder = feature_dict["batch_size"]
+        S_true = feature_dict["S"]
+        mask = feature_dict["mask"]
+        chain_mask = feature_dict["chain_mask"]
+        bias = feature_dict["bias"]
+        randn = feature_dict["randn"]
+        symmetry_list_of_lists = feature_dict["symmetry_residues"]
+        symmetry_weights_list_of_lists = feature_dict["symmetry_weights"]
+        temperature_raw = feature_dict["temperature"]
+    
+        B, L = S_true.shape
+        device = S_true.device
+    
+        h_V, h_E, E_idx = self.encode(feature_dict)
+    
+        chain_mask = mask * chain_mask
+        decoding_order = torch.argsort((chain_mask + 1e-4) * torch.abs(randn))
+        temperature = normalize_temperature(
+            temperature_raw, B, L, B_decoder, device
         )
-        mask_attend = torch.gather(order_mask_backward, 2, E_idx).unsqueeze(-1)
-        mask_1D = mask.view([B, L, 1, 1])
-        mask_bw = mask_1D * mask_attend
-        mask_fw = mask_1D * (1.0 - mask_attend)
-
-        S_true = S_true.repeat(B_decoder, 1)
-        h_V = h_V.repeat(B_decoder, 1, 1)
-        h_E = h_E.repeat(B_decoder, 1, 1, 1)
-        chain_mask = chain_mask.repeat(B_decoder, 1)
-        mask = mask.repeat(B_decoder, 1)
-        bias = bias.repeat(B_decoder, 1, 1)
-
-        all_probs = torch.zeros((B_decoder, L, 20), device=device)
-        all_log_probs = torch.zeros((B_decoder, L, 21), device=device)
-        h_S = torch.zeros_like(h_V)
-        S = 20 * torch.ones((B_decoder, L), dtype=torch.int64, device=device)
-        h_V_stack = [h_V] + [
-            torch.zeros_like(h_V) for _ in range(len(self.decoder_layers))
-        ]
-
-        h_EX_encoder = cat_neighbors_nodes(torch.zeros_like(h_S), h_E, E_idx)
-        h_EXV_encoder = cat_neighbors_nodes(h_V, h_EX_encoder, E_idx)
-        h_EXV_encoder_fw = mask_fw * h_EXV_encoder
-
-        for t_ in range(L):
-            t = decoding_order[:, t_]
-            chain_mask_t = torch.gather(chain_mask, 1, t[:, None])[:, 0]
-            mask_t = torch.gather(mask, 1, t[:, None])[:, 0]
-            bias_t = torch.gather(
-                bias, 1, t[:, None, None].repeat(1, 1, 21)
-            )[:, 0, :]
-            temperature_t = gather_temperature(temperature, t)
-
-            E_idx_t = torch.gather(
-                E_idx, 1, t[:, None, None].repeat(1, 1, E_idx.shape[-1])
+    
+        if len(symmetry_list_of_lists[0]) == 0 and len(symmetry_list_of_lists) == 1:
+            E_idx = E_idx.repeat(B_decoder, 1, 1)
+            permutation_matrix_reverse = torch.nn.functional.one_hot(
+                decoding_order, num_classes=L
+            ).float()
+            order_mask_backward = torch.einsum(
+                "ij, biq, bjp->bqp",
+                (1 - torch.triu(torch.ones(L, L, device=device))),
+                permutation_matrix_reverse,
+                permutation_matrix_reverse,
             )
-            h_E_t = torch.gather(
-                h_E,
-                1,
-                t[:, None, None, None].repeat(1, 1, h_E.shape[-2], h_E.shape[-1]),
-            )
-            h_ES_t = cat_neighbors_nodes(h_S, h_E_t, E_idx_t)
-            h_EXV_encoder_t = torch.gather(
-                h_EXV_encoder_fw,
-                1,
-                t[:, None, None, None].repeat(
-                    1, 1, h_EXV_encoder_fw.shape[-2], h_EXV_encoder_fw.shape[-1]
-                ),
-            )
-            mask_bw_t = torch.gather(
-                mask_bw,
-                1,
-                t[:, None, None, None].repeat(
-                    1, 1, mask_bw.shape[-2], mask_bw.shape[-1]
-                ),
-            )
-
-            for l, layer in enumerate(self.decoder_layers):
-                h_ESV_decoder_t = cat_neighbors_nodes(
-                    h_V_stack[l], h_ES_t, E_idx_t
+            mask_attend = torch.gather(order_mask_backward, 2, E_idx).unsqueeze(-1)
+            mask_1D = mask.view([B, L, 1, 1])
+            mask_bw = mask_1D * mask_attend
+            mask_fw = mask_1D * (1.0 - mask_attend)
+    
+            S_true = S_true.repeat(B_decoder, 1)
+            h_V = h_V.repeat(B_decoder, 1, 1)
+            h_E = h_E.repeat(B_decoder, 1, 1, 1)
+            chain_mask = chain_mask.repeat(B_decoder, 1)
+            mask = mask.repeat(B_decoder, 1)
+            bias = bias.repeat(B_decoder, 1, 1)
+    
+            all_probs = torch.zeros((B_decoder, L, 20), device=device)
+            all_log_probs = torch.zeros((B_decoder, L, 21), device=device)
+            h_S = torch.zeros_like(h_V)
+            S = 20 * torch.ones((B_decoder, L), dtype=torch.int64, device=device)
+            h_V_stack = [h_V] + [
+                torch.zeros_like(h_V) for _ in range(len(self.decoder_layers))
+            ]
+    
+            h_EX_encoder = cat_neighbors_nodes(torch.zeros_like(h_S), h_E, E_idx)
+            h_EXV_encoder = cat_neighbors_nodes(h_V, h_EX_encoder, E_idx)
+            h_EXV_encoder_fw = mask_fw * h_EXV_encoder
+    
+            for t_ in range(L):
+                t = decoding_order[:, t_]
+                chain_mask_t = torch.gather(chain_mask, 1, t[:, None])[:, 0]
+                mask_t = torch.gather(mask, 1, t[:, None])[:, 0]
+                bias_t = torch.gather(
+                    bias, 1, t[:, None, None].repeat(1, 1, 21)
+                )[:, 0, :]
+                temperature_t = gather_temperature(temperature, t)
+    
+                E_idx_t = torch.gather(
+                    E_idx, 1, t[:, None, None].repeat(1, 1, E_idx.shape[-1])
                 )
-                h_V_t = torch.gather(
-                    h_V_stack[l],
+                h_E_t = torch.gather(
+                    h_E,
                     1,
-                    t[:, None, None].repeat(1, 1, h_V_stack[l].shape[-1]),
+                    t[:, None, None, None].repeat(1, 1, h_E.shape[-2], h_E.shape[-1]),
                 )
-                h_ESV_t = mask_bw_t * h_ESV_decoder_t + h_EXV_encoder_t
-                h_V_stack[l + 1].scatter_(
-                    1,
-                    t[:, None, None].repeat(1, 1, h_V.shape[-1]),
-                    layer(h_V_t, h_ESV_t, mask_V=mask_t),
-                )
-
-            h_V_t = torch.gather(
-                h_V_stack[-1],
-                1,
-                t[:, None, None].repeat(1, 1, h_V_stack[-1].shape[-1]),
-            )[:, 0]
-
-            logits = self.W_out(h_V_t)
-            log_probs = torch.nn.functional.log_softmax(logits, dim=-1)
-            probs = torch.nn.functional.softmax(
-                (logits + bias_t) / temperature_t, dim=-1
-            )
-
-            probs_sample = probs[:, :20] / torch.sum(
-                probs[:, :20], dim=-1, keepdim=True
-            )
-            S_t = torch.multinomial(probs_sample, 1)[:, 0]
-
-            all_probs.scatter_(
-                1,
-                t[:, None, None].repeat(1, 1, 20),
-                (chain_mask_t[:, None, None] * probs_sample[:, None, :]).float(),
-            )
-            all_log_probs.scatter_(
-                1,
-                t[:, None, None].repeat(1, 1, 21),
-                (chain_mask_t[:, None, None] * log_probs[:, None, :]).float(),
-            )
-
-            S_true_t = torch.gather(S_true, 1, t[:, None])[:, 0]
-            S_t = (S_t * chain_mask_t + S_true_t * (1.0 - chain_mask_t)).long()
-
-            h_S.scatter_(
-                1,
-                t[:, None, None].repeat(1, 1, h_S.shape[-1]),
-                self.W_s(S_t)[:, None, :],
-            )
-            S.scatter_(1, t[:, None], S_t[:, None])
-
-        output_dict = {
-            "S": S,
-            "sampling_probs": all_probs,
-            "log_probs": all_log_probs,
-            "decoding_order": decoding_order,
-        }
-
-    else:
-        symmetry_weights = torch.ones([L], device=device)
-        for i1, item_list in enumerate(symmetry_list_of_lists):
-            for i2, item in enumerate(item_list):
-                symmetry_weights[item] = symmetry_weights_list_of_lists[i1][i2]
-
-        new_decoding_order = []
-        for t_dec in list(decoding_order[0].cpu().data.numpy()):
-            if t_dec not in list(itertools.chain(*new_decoding_order)):
-                list_a = [item for item in symmetry_list_of_lists if t_dec in item]
-                if list_a:
-                    new_decoding_order.append(list_a[0])
-                else:
-                    new_decoding_order.append([t_dec])
-
-        decoding_order = torch.tensor(
-            list(itertools.chain(*new_decoding_order)), device=device
-        )[None,].repeat(B, 1)
-
-        permutation_matrix_reverse = torch.nn.functional.one_hot(
-            decoding_order, num_classes=L
-        ).float()
-        order_mask_backward = torch.einsum(
-            "ij, biq, bjp->bqp",
-            (1 - torch.triu(torch.ones(L, L, device=device))),
-            permutation_matrix_reverse,
-            permutation_matrix_reverse,
-        )
-        mask_attend = torch.gather(order_mask_backward, 2, E_idx).unsqueeze(-1)
-        mask_1D = mask.view([B, L, 1, 1])
-        mask_bw = mask_1D * mask_attend
-        mask_fw = mask_1D * (1.0 - mask_attend)
-
-        S_true = S_true.repeat(B_decoder, 1)
-        h_V = h_V.repeat(B_decoder, 1, 1)
-        h_E = h_E.repeat(B_decoder, 1, 1, 1)
-        E_idx = E_idx.repeat(B_decoder, 1, 1)
-        mask_fw = mask_fw.repeat(B_decoder, 1, 1, 1)
-        mask_bw = mask_bw.repeat(B_decoder, 1, 1, 1)
-        chain_mask = chain_mask.repeat(B_decoder, 1)
-        mask = mask.repeat(B_decoder, 1)
-        bias = bias.repeat(B_decoder, 1, 1)
-
-        all_probs = torch.zeros((B_decoder, L, 20), device=device)
-        all_log_probs = torch.zeros((B_decoder, L, 21), device=device)
-        h_S = torch.zeros_like(h_V)
-        S = 20 * torch.ones((B_decoder, L), dtype=torch.int64, device=device)
-        h_V_stack = [h_V] + [
-            torch.zeros_like(h_V) for _ in range(len(self.decoder_layers))
-        ]
-
-        h_EX_encoder = cat_neighbors_nodes(torch.zeros_like(h_S), h_E, E_idx)
-        h_EXV_encoder = cat_neighbors_nodes(h_V, h_EX_encoder, E_idx)
-        h_EXV_encoder_fw = mask_fw * h_EXV_encoder
-
-        for t_list in new_decoding_order:
-            total_logits = 0.0
-            group_indices = torch.tensor(t_list, device=device)
-            group_temps = temperature[:, group_indices]
-            temperature_t = group_temps.mean(dim=1, keepdim=True)
-
-            for t in t_list:
-                chain_mask_t = chain_mask[:, t]
-                mask_t = mask[:, t]
-                bias_t = bias[:, t]
-
-                E_idx_t = E_idx[:, t : t + 1]
-                h_E_t = h_E[:, t : t + 1]
                 h_ES_t = cat_neighbors_nodes(h_S, h_E_t, E_idx_t)
-                h_EXV_encoder_t = h_EXV_encoder_fw[:, t : t + 1]
-
+                h_EXV_encoder_t = torch.gather(
+                    h_EXV_encoder_fw,
+                    1,
+                    t[:, None, None, None].repeat(
+                        1, 1, h_EXV_encoder_fw.shape[-2], h_EXV_encoder_fw.shape[-1]
+                    ),
+                )
+                mask_bw_t = torch.gather(
+                    mask_bw,
+                    1,
+                    t[:, None, None, None].repeat(
+                        1, 1, mask_bw.shape[-2], mask_bw.shape[-1]
+                    ),
+                )
+    
                 for l, layer in enumerate(self.decoder_layers):
                     h_ESV_decoder_t = cat_neighbors_nodes(
                         h_V_stack[l], h_ES_t, E_idx_t
                     )
-                    h_V_t = h_V_stack[l][:, t : t + 1]
-                    h_ESV_t = (
-                        mask_bw[:, t : t + 1] * h_ESV_decoder_t
-                        + h_EXV_encoder_t
+                    h_V_t = torch.gather(
+                        h_V_stack[l],
+                        1,
+                        t[:, None, None].repeat(1, 1, h_V_stack[l].shape[-1]),
                     )
-                    h_V_stack[l + 1][:, t : t + 1, :] = layer(
-                        h_V_t, h_ESV_t, mask_V=mask_t[:, None]
+                    h_ESV_t = mask_bw_t * h_ESV_decoder_t + h_EXV_encoder_t
+                    h_V_stack[l + 1].scatter_(
+                        1,
+                        t[:, None, None].repeat(1, 1, h_V.shape[-1]),
+                        layer(h_V_t, h_ESV_t, mask_V=mask_t),
                     )
-
-                h_V_t = h_V_stack[-1][:, t]
+    
+                h_V_t = torch.gather(
+                    h_V_stack[-1],
+                    1,
+                    t[:, None, None].repeat(1, 1, h_V_stack[-1].shape[-1]),
+                )[:, 0]
+    
                 logits = self.W_out(h_V_t)
                 log_probs = torch.nn.functional.log_softmax(logits, dim=-1)
-                all_log_probs[:, t] = (
-                    chain_mask_t[:, None] * log_probs
-                ).float()
-                total_logits += symmetry_weights[t] * logits
-
-            probs = torch.nn.functional.softmax(
-                (total_logits + bias_t) / temperature_t, dim=-1
+                probs = torch.nn.functional.softmax(
+                    (logits + bias_t) / temperature_t, dim=-1
+                )
+    
+                probs_sample = probs[:, :20] / torch.sum(
+                    probs[:, :20], dim=-1, keepdim=True
+                )
+                S_t = torch.multinomial(probs_sample, 1)[:, 0]
+    
+                all_probs.scatter_(
+                    1,
+                    t[:, None, None].repeat(1, 1, 20),
+                    (chain_mask_t[:, None, None] * probs_sample[:, None, :]).float(),
+                )
+                all_log_probs.scatter_(
+                    1,
+                    t[:, None, None].repeat(1, 1, 21),
+                    (chain_mask_t[:, None, None] * log_probs[:, None, :]).float(),
+                )
+    
+                S_true_t = torch.gather(S_true, 1, t[:, None])[:, 0]
+                S_t = (S_t * chain_mask_t + S_true_t * (1.0 - chain_mask_t)).long()
+    
+                h_S.scatter_(
+                    1,
+                    t[:, None, None].repeat(1, 1, h_S.shape[-1]),
+                    self.W_s(S_t)[:, None, :],
+                )
+                S.scatter_(1, t[:, None], S_t[:, None])
+    
+            output_dict = {
+                "S": S,
+                "sampling_probs": all_probs,
+                "log_probs": all_log_probs,
+                "decoding_order": decoding_order,
+            }
+    
+        else:
+            symmetry_weights = torch.ones([L], device=device)
+            for i1, item_list in enumerate(symmetry_list_of_lists):
+                for i2, item in enumerate(item_list):
+                    symmetry_weights[item] = symmetry_weights_list_of_lists[i1][i2]
+    
+            new_decoding_order = []
+            for t_dec in list(decoding_order[0].cpu().data.numpy()):
+                if t_dec not in list(itertools.chain(*new_decoding_order)):
+                    list_a = [item for item in symmetry_list_of_lists if t_dec in item]
+                    if list_a:
+                        new_decoding_order.append(list_a[0])
+                    else:
+                        new_decoding_order.append([t_dec])
+    
+            decoding_order = torch.tensor(
+                list(itertools.chain(*new_decoding_order)), device=device
+            )[None,].repeat(B, 1)
+    
+            permutation_matrix_reverse = torch.nn.functional.one_hot(
+                decoding_order, num_classes=L
+            ).float()
+            order_mask_backward = torch.einsum(
+                "ij, biq, bjp->bqp",
+                (1 - torch.triu(torch.ones(L, L, device=device))),
+                permutation_matrix_reverse,
+                permutation_matrix_reverse,
             )
-            probs_sample = probs[:, :20] / torch.sum(
-                probs[:, :20], dim=-1, keepdim=True
-            )
-            S_t = torch.multinomial(probs_sample, 1)[:, 0]
-
-            for t in t_list:
-                chain_mask_t = chain_mask[:, t]
-                all_probs[:, t] = (
-                    chain_mask_t[:, None] * probs_sample
-                ).float()
-                S_true_t = S_true[:, t]
-                S_final = (
-                    S_t * chain_mask_t
-                    + S_true_t * (1.0 - chain_mask_t)
-                ).long()
-                h_S[:, t] = self.W_s(S_final)
-                S[:, t] = S_final
-
-        output_dict = {
-            "S": S,
-            "sampling_probs": all_probs,
-            "log_probs": all_log_probs,
-            "decoding_order": decoding_order.repeat(B_decoder, 1),
-        }
-
-    return output_dict
+            mask_attend = torch.gather(order_mask_backward, 2, E_idx).unsqueeze(-1)
+            mask_1D = mask.view([B, L, 1, 1])
+            mask_bw = mask_1D * mask_attend
+            mask_fw = mask_1D * (1.0 - mask_attend)
+    
+            S_true = S_true.repeat(B_decoder, 1)
+            h_V = h_V.repeat(B_decoder, 1, 1)
+            h_E = h_E.repeat(B_decoder, 1, 1, 1)
+            E_idx = E_idx.repeat(B_decoder, 1, 1)
+            mask_fw = mask_fw.repeat(B_decoder, 1, 1, 1)
+            mask_bw = mask_bw.repeat(B_decoder, 1, 1, 1)
+            chain_mask = chain_mask.repeat(B_decoder, 1)
+            mask = mask.repeat(B_decoder, 1)
+            bias = bias.repeat(B_decoder, 1, 1)
+    
+            all_probs = torch.zeros((B_decoder, L, 20), device=device)
+            all_log_probs = torch.zeros((B_decoder, L, 21), device=device)
+            h_S = torch.zeros_like(h_V)
+            S = 20 * torch.ones((B_decoder, L), dtype=torch.int64, device=device)
+            h_V_stack = [h_V] + [
+                torch.zeros_like(h_V) for _ in range(len(self.decoder_layers))
+            ]
+    
+            h_EX_encoder = cat_neighbors_nodes(torch.zeros_like(h_S), h_E, E_idx)
+            h_EXV_encoder = cat_neighbors_nodes(h_V, h_EX_encoder, E_idx)
+            h_EXV_encoder_fw = mask_fw * h_EXV_encoder
+    
+            for t_list in new_decoding_order:
+                total_logits = 0.0
+                group_indices = torch.tensor(t_list, device=device)
+                group_temps = temperature[:, group_indices]
+                temperature_t = group_temps.mean(dim=1, keepdim=True)
+    
+                for t in t_list:
+                    chain_mask_t = chain_mask[:, t]
+                    mask_t = mask[:, t]
+                    bias_t = bias[:, t]
+    
+                    E_idx_t = E_idx[:, t : t + 1]
+                    h_E_t = h_E[:, t : t + 1]
+                    h_ES_t = cat_neighbors_nodes(h_S, h_E_t, E_idx_t)
+                    h_EXV_encoder_t = h_EXV_encoder_fw[:, t : t + 1]
+    
+                    for l, layer in enumerate(self.decoder_layers):
+                        h_ESV_decoder_t = cat_neighbors_nodes(
+                            h_V_stack[l], h_ES_t, E_idx_t
+                        )
+                        h_V_t = h_V_stack[l][:, t : t + 1]
+                        h_ESV_t = (
+                            mask_bw[:, t : t + 1] * h_ESV_decoder_t
+                            + h_EXV_encoder_t
+                        )
+                        h_V_stack[l + 1][:, t : t + 1, :] = layer(
+                            h_V_t, h_ESV_t, mask_V=mask_t[:, None]
+                        )
+    
+                    h_V_t = h_V_stack[-1][:, t]
+                    logits = self.W_out(h_V_t)
+                    log_probs = torch.nn.functional.log_softmax(logits, dim=-1)
+                    all_log_probs[:, t] = (
+                        chain_mask_t[:, None] * log_probs
+                    ).float()
+                    total_logits += symmetry_weights[t] * logits
+    
+                probs = torch.nn.functional.softmax(
+                    (total_logits + bias_t) / temperature_t, dim=-1
+                )
+                probs_sample = probs[:, :20] / torch.sum(
+                    probs[:, :20], dim=-1, keepdim=True
+                )
+                S_t = torch.multinomial(probs_sample, 1)[:, 0]
+    
+                for t in t_list:
+                    chain_mask_t = chain_mask[:, t]
+                    all_probs[:, t] = (
+                        chain_mask_t[:, None] * probs_sample
+                    ).float()
+                    S_true_t = S_true[:, t]
+                    S_final = (
+                        S_t * chain_mask_t
+                        + S_true_t * (1.0 - chain_mask_t)
+                    ).long()
+                    h_S[:, t] = self.W_s(S_final)
+                    S[:, t] = S_final
+    
+            output_dict = {
+                "S": S,
+                "sampling_probs": all_probs,
+                "log_probs": all_log_probs,
+                "decoding_order": decoding_order.repeat(B_decoder, 1),
+            }
+    
+        return output_dict
 
 
     def single_aa_score(self, feature_dict, use_sequence: bool):
